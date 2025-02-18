@@ -40,7 +40,7 @@ fn print(arena: Allocator, output: *std.io.BufferedWriter, host: Target) anyerro
 
     const glibc_abi = try glibc.loadMetaData(arena, abilists_contents);
 
-    var jws = std.json.writeStream(output, .{ .whitespace = .indent_1 });
+    var jws: std.json.Stringify = .{ .writer = output, .options = .{ .whitespace = .indent_1 } };
 
     try jws.beginObject();
 
