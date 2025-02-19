@@ -472,7 +472,6 @@ pub const Serializer = struct {
             .bool, .null => try std.fmt.format(self.writer, "{}", .{val}),
             .enum_literal => try self.ident(@tagName(val)),
             .@"enum" => try self.ident(@tagName(val)),
-            .void => try self.writer.writeAll("{}"),
             .pointer => |pointer| {
                 // Try to serialize as a string
                 const item: ?type = switch (@typeInfo(pointer.child)) {
@@ -547,15 +546,21 @@ pub const Serializer = struct {
             },
             .@"union" => |@"union"| {
                 comptime assert(@"union".tag_type != null);
-                var container = try self.startStruct(.{ .whitespace_style = .{ .fields = 1 } });
                 switch (val) {
-                    inline else => |pl, tag| try container.fieldArbitraryDepth(
-                        @tagName(tag),
-                        pl,
-                        options,
-                    ),
+                    inline else => |pl, tag| if (@TypeOf(pl) == void)
+                        try self.writer.print(".{s}", .{@tagName(tag)})
+                    else {
+                        var container = try self.startStruct(.{ .whitespace_style = .{ .fields = 1 } });
+
+                        try container.fieldArbitraryDepth(
+                            @tagName(tag),
+                            pl,
+                            options,
+                        );
+
+                        try container.finish();
+                    },
                 }
-                try container.finish();
             },
             .optional => if (val) |inner| {
                 try self.valueArbitraryDepth(inner, options);
