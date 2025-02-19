@@ -818,9 +818,9 @@ pub const Session = struct {
         upload_pack_uri.query = null;
         upload_pack_uri.fragment = null;
 
-        var body: std.ArrayListUnmanaged(u8) = .empty;
-        defer body.deinit(session.allocator);
-        const body_writer = body.writer(session.allocator);
+        var body: std.io.AllocatingWriter = undefined;
+        const body_writer = body.init(session.allocator);
+        defer body.deinit();
         try Packet.write(.{ .data = "command=ls-refs\n" }, body_writer);
         if (session.supports_agent) {
             try Packet.write(.{ .data = agent_capability }, body_writer);
@@ -853,9 +853,11 @@ pub const Session = struct {
             },
         });
         errdefer request.deinit();
-        request.transfer_encoding = .{ .content_length = body.items.len };
+        const written = body.getWritten();
+        request.transfer_encoding = .{ .content_length = written.len };
         try request.send();
-        try request.writeAll(body.items);
+        var w = request.writer().unbuffered();
+        try w.writeAll(written);
         try request.finish();
 
         try request.wait();
@@ -933,9 +935,9 @@ pub const Session = struct {
         upload_pack_uri.query = null;
         upload_pack_uri.fragment = null;
 
-        var body: std.ArrayListUnmanaged(u8) = .empty;
-        defer body.deinit(session.allocator);
-        const body_writer = body.writer(session.allocator);
+        var body: std.io.AllocatingWriter = undefined;
+        const body_writer = body.init(session.allocator);
+        defer body.deinit();
         try Packet.write(.{ .data = "command=fetch\n" }, body_writer);
         if (session.supports_agent) {
             try Packet.write(.{ .data = agent_capability }, body_writer);
@@ -970,9 +972,11 @@ pub const Session = struct {
             },
         });
         errdefer request.deinit();
-        request.transfer_encoding = .{ .content_length = body.items.len };
+        const written = body.getWritten();
+        request.transfer_encoding = .{ .content_length = written.len };
         try request.send();
-        try request.writeAll(body.items);
+        var w = request.writer().unbuffered();
+        try w.writeAll(written);
         try request.finish();
 
         try request.wait();
