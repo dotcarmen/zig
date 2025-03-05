@@ -19,6 +19,7 @@ test "@popCount 128bit integer" {
     if (builtin.zig_backend == .stage2_sparc64) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_spirv64) return error.SkipZigTest;
     if (builtin.zig_backend == .stage2_riscv64) return error.SkipZigTest;
+    if (builtin.zig_backend == .stage2_llvm and builtin.target.cpu.arch == .aarch64_be) return error.SkipZigTest; // https://github.com/llvm/llvm-project/issues/129843
 
     comptime {
         try expect(@popCount(@as(u128, 0b11111111000110001100010000100001000011000011100101010001)) == 24);
