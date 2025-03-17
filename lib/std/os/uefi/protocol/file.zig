@@ -205,12 +205,13 @@ pub const File = extern struct {
 
     pub fn getInfo(
         self: *const File,
-        information_type: *align(8) const Guid,
-        buffer: []u8,
-    ) GetInfoError![]u8 {
-        var len = buffer.len;
-        switch (self._get_info(self, information_type, &len, buffer.ptr)) {
-            .success => return buffer[0..len],
+        comptime information_type: std.meta.Tag(Info),
+    ) GetInfoError!@FieldType(Info, @tagName(information_type)) {
+        const InfoData = @FieldType(Info, @tagName(information_type));
+        var val: InfoData = undefined;
+        var len = @sizeOf(InfoData);
+        switch (self._get_info(self, &InfoData.guid, &len, @ptrCast(&val))) {
+            .success => {},
             .unsupported => return Error.Unsupported,
             .no_media => return Error.NoMedia,
             .device_error => return Error.DeviceError,
@@ -218,6 +219,11 @@ pub const File = extern struct {
             .buffer_too_small => return Error.BufferTooSmall,
             else => |status| return uefi.unexpectedStatus(status),
         }
+
+        if (len != @sizeOf(InfoData))
+            return error.Unexpected
+        else
+            return val;
     }
 
     pub fn setInfo(
@@ -281,6 +287,63 @@ pub const File = extern struct {
             .read_only = true,
             .system = true,
             ._flag = true,
+        };
+    };
+
+    pub const Info = union(enum) {
+        file: Info.File,
+        volume: Info.Volume,
+        volume_label: Info.VolumeLabel,
+
+        pub const File = extern struct {
+            size: u64,
+            file_size: u64,
+            physical_size: u64,
+            create_time: uefi.Time,
+            last_access_time: uefi.Time,
+            modification_time: uefi.Time,
+            attribute: Attributes,
+            file_name: [*:0]const u16,
+
+            pub const guid align(8) = Guid{
+                .time_low = 0x9576e92,
+                .time_mid = 0x6d3f,
+                .time_high_and_version = 0x11d2,
+                .clock_seq_high_and_reserved = 0x8e,
+                .clock_seq_low = 0x39,
+                .node = .{ 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b },
+            };
+        };
+
+        pub const Volume = extern struct {
+            size: u64,
+            read_only: bool,
+            volume_size: u64,
+            free_space: u64,
+            block_size: u32,
+            volume_label: [*:0]const u16,
+
+            pub const guid align(8) = Guid{
+                .time_low = 0x9576e93,
+                .time_mid = 0x6d3f,
+                .time_high_and_version = 0x11d2,
+                .clock_seq_high_and_reserved = 0x8e,
+                .clock_seq_low = 0x39,
+                .node = .{ 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b },
+            };
+        };
+
+        pub const VolumeLabel = extern struct {
+            volume_label: [*:0]const u16,
+
+            pub const guid align(8) = Guid{
+                .time_low = 0xdb47d7d3,
+                .time_mid = 0xfe81,
+                .time_high_and_version = 0x11d3,
+                .clock_seq_high_and_reserved = 0x9a,
+                .clock_seq_low = 0x35,
+                .node = .{ 0x00, 0x90, 0x27, 0x3f, 0xc1, 0x4d },
+            };
         };
     };
 
