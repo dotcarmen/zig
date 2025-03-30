@@ -516,7 +516,7 @@ fn posixCallMainAndExit(argc_argv_ptr: [*]usize) callconv(.c) noreturn {
                     else => continue,
                 }
             }
-            break :init @as([*]elf.Phdr, @ptrFromInt(at_phdr))[0..at_phnum];
+            break :init @as([*]elf.ProgramHeader.Native, @ptrFromInt(at_phdr))[0..at_phnum];
         };
 
         // Apply the initial relocations as early as possible in the startup process. We cannot
@@ -571,10 +571,10 @@ fn posixCallMainAndExit(argc_argv_ptr: [*]usize) callconv(.c) noreturn {
     std.posix.exit(callMainWithArgs(argc, argv, envp));
 }
 
-fn expandStackSize(phdrs: []elf.Phdr) void {
+fn expandStackSize(phdrs: []elf.ProgramHeader.Native) void {
     for (phdrs) |*phdr| {
         switch (phdr.p_type) {
-            elf.PT_GNU_STACK => {
+            .gnu_stack => {
                 if (phdr.p_memsz == 0) break;
                 assert(phdr.p_memsz % std.heap.page_size_min == 0);
 
@@ -624,7 +624,7 @@ fn main(c_argc: c_int, c_argv: [*][*:0]c_char, c_envp: [*:null]?[*:0]c_char) cal
     if (builtin.os.tag == .linux) {
         const at_phdr = std.c.getauxval(elf.AT_PHDR);
         const at_phnum = std.c.getauxval(elf.AT_PHNUM);
-        const phdrs = (@as([*]elf.Phdr, @ptrFromInt(at_phdr)))[0..at_phnum];
+        const phdrs = (@as([*]elf.ProgramHeader.Native, @ptrFromInt(at_phdr)))[0..at_phnum];
         expandStackSize(phdrs);
     }
 

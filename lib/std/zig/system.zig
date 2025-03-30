@@ -489,18 +489,14 @@ fn detectNativeCpuAndFeatures(cpu_arch: Target.Cpu.Arch, os: Target.Os, query: T
     return null;
 }
 
-pub const AbiAndDynamicLinkerFromFileError = error{
+pub const AbiAndDynamicLinkerFromFileError = elf.Header.ParseError || error{
     FileSystem,
     SystemResources,
     SymLinkLoop,
     ProcessFdQuotaExceeded,
     SystemFdQuotaExceeded,
     UnableToReadElfFile,
-    InvalidElfClass,
-    InvalidElfVersion,
-    InvalidElfEndian,
     InvalidElfFile,
-    InvalidElfMagic,
     Unexpected,
     UnexpectedEndOfFile,
     NameTooLong,
@@ -516,25 +512,26 @@ pub fn abiAndDynamicLinkerFromFile(
 ) AbiAndDynamicLinkerFromFileError!Target {
     var hdr_buf: [@sizeOf(elf.Elf64_Ehdr)]u8 align(@alignOf(elf.Elf64_Ehdr)) = undefined;
     _ = try preadAtLeast(file, &hdr_buf, 0, hdr_buf.len);
-    const hdr32: *elf.Elf32_Ehdr = @ptrCast(&hdr_buf);
-    const hdr64: *elf.Elf64_Ehdr = @ptrCast(&hdr_buf);
-    if (!mem.eql(u8, hdr32.e_ident[0..4], elf.MAGIC)) return error.InvalidElfMagic;
-    const elf_endian: std.builtin.Endian = switch (hdr32.e_ident[elf.EI_DATA]) {
-        elf.ELFDATA2LSB => .little,
-        elf.ELFDATA2MSB => .big,
-        else => return error.InvalidElfEndian,
-    };
-    const need_bswap = elf_endian != native_endian;
-    if (hdr32.e_ident[elf.EI_VERSION] != 1) return error.InvalidElfVersion;
+    const hdr = try elf.Header.parse(&hdr_buf);
+    // const hdr32: *elf.Elf32_Ehdr = @ptrCast(&hdr_buf);
+    // const hdr64: *elf.Elf64_Ehdr = @ptrCast(&hdr_buf);
+    // if (!mem.eql(u8, hdr32.e_ident[0..4], elf.MAGIC)) return error.InvalidElfMagic;
+    // const elf_endian: std.builtin.Endian = switch (hdr32.e_ident[elf.EI_DATA]) {
+    //     elf.ELFDATA2LSB => .little,
+    //     elf.ELFDATA2MSB => .big,
+    //     else => return error.InvalidElfEndian,
+    // };
+    const need_bswap = hdr.endian != native_endian;
+    // if (hdr32.e_ident[elf.EI_VERSION] != 1) return error.InvalidElfVersion;
 
-    const is_64 = switch (hdr32.e_ident[elf.EI_CLASS]) {
-        elf.ELFCLASS32 => false,
-        elf.ELFCLASS64 => true,
-        else => return error.InvalidElfClass,
-    };
-    var phoff = elfInt(is_64, need_bswap, hdr32.e_phoff, hdr64.e_phoff);
-    const phentsize = elfInt(is_64, need_bswap, hdr32.e_phentsize, hdr64.e_phentsize);
-    const phnum = elfInt(is_64, need_bswap, hdr32.e_phnum, hdr64.e_phnum);
+    // const is_64 = switch (hdr32.e_ident[elf.EI_CLASS]) {
+    //     elf.ELFCLASS32 => false,
+    //     elf.ELFCLASS64 => true,
+    //     else => return error.InvalidElfClass,
+    // };
+    // var phoff = elfInt(is_64, need_bswap, hdr32.e_phoff, hdr64.e_phoff);
+    // const phentsize = elfInt(is_64, need_bswap, hdr32.e_phentsize, hdr64.e_phentsize);
+    // const phnum = elfInt(is_64, need_bswap, hdr32.e_phnum, hdr64.e_phnum);
 
     var result: Target = .{
         .cpu = cpu,
@@ -546,112 +543,108 @@ pub fn abiAndDynamicLinkerFromFile(
     var rpath_offset: ?u64 = null; // Found inside PT_DYNAMIC
     const look_for_ld = query.dynamic_linker.get() == null;
 
-    var ph_buf: [16 * @sizeOf(elf.Elf64_Phdr)]u8 align(@alignOf(elf.Elf64_Phdr)) = undefined;
-    if (phentsize > @sizeOf(elf.Elf64_Phdr)) return error.InvalidElfFile;
+    var pheaders = hdr.program_header_iterator(file);
+    while (pheaders.next() catch |err| return switch (err) {
+        error.OperationAborted => unreachable, // Windows-only
+        error.WouldBlock => unreachable, // Did not request blocking mode
+        error.Canceled => unreachable, // timerfd is unseekable
+        error.NotOpenForReading => unreachable,
+        error.SystemResources => return error.SystemResources,
+        error.IsDir => return error.UnableToReadElfFile,
+        error.BrokenPipe => return error.UnableToReadElfFile,
+        error.Unseekable => return error.UnableToReadElfFile,
+        error.ConnectionResetByPeer => return error.UnableToReadElfFile,
+        error.ConnectionTimedOut => return error.UnableToReadElfFile,
+        error.SocketNotConnected => return error.UnableToReadElfFile,
+        error.Unexpected => return error.Unexpected,
+        error.InputOutput => return error.FileSystem,
+        error.AccessDenied => return error.Unexpected,
+        error.ProcessNotFound => return error.ProcessNotFound,
+        error.LockViolation => return error.UnableToReadElfFile,
+        else => @errorCast(err),
+    }) |ph| {
+        switch (ph.type) {
+            .interp => if (look_for_ld) {
+                if (ph.filesz > result.dynamic_linker.buffer.len)
+                    return error.NameTooLong;
+                const len = try preadAtLeast(
+                    file,
+                    result.dynamic_linker.buffer[0..ph.filesz],
+                    ph.offset,
+                    // PT_INTERP includes a null byte in filesz
+                    ph.filesz - 1,
+                );
+                result.dynamic_linker.len = @intCast(len);
 
-    var ph_i: u16 = 0;
-    while (ph_i < phnum) {
-        // Reserve some bytes so that we can deref the 64-bit struct fields
-        // even when the ELF file is 32-bits.
-        const ph_reserve: usize = @sizeOf(elf.Elf64_Phdr) - @sizeOf(elf.Elf32_Phdr);
-        const ph_read_byte_len = try preadAtLeast(file, ph_buf[0 .. ph_buf.len - ph_reserve], phoff, phentsize);
-        var ph_buf_i: usize = 0;
-        while (ph_buf_i < ph_read_byte_len and ph_i < phnum) : ({
-            ph_i += 1;
-            phoff += phentsize;
-            ph_buf_i += phentsize;
-        }) {
-            const ph32: *elf.Elf32_Phdr = @ptrCast(@alignCast(&ph_buf[ph_buf_i]));
-            const ph64: *elf.Elf64_Phdr = @ptrCast(@alignCast(&ph_buf[ph_buf_i]));
-            const p_type = elfInt(is_64, need_bswap, ph32.p_type, ph64.p_type);
-            switch (p_type) {
-                elf.PT_INTERP => if (look_for_ld) {
-                    const p_offset = elfInt(is_64, need_bswap, ph32.p_offset, ph64.p_offset);
-                    const p_filesz = elfInt(is_64, need_bswap, ph32.p_filesz, ph64.p_filesz);
-                    if (p_filesz > result.dynamic_linker.buffer.len) return error.NameTooLong;
-                    const filesz: usize = @intCast(p_filesz);
-                    _ = try preadAtLeast(file, result.dynamic_linker.buffer[0..filesz], p_offset, filesz);
-                    // PT_INTERP includes a null byte in filesz.
-                    const len = filesz - 1;
-                    // dynamic_linker.max_byte is "max", not "len".
-                    // We know it will fit in u8 because we check against dynamic_linker.buffer.len above.
-                    result.dynamic_linker.len = @intCast(len);
-
-                    // Use it to determine ABI.
-                    const full_ld_path = result.dynamic_linker.buffer[0..len];
-                    for (ld_info_list) |ld_info| {
-                        const standard_ld_basename = fs.path.basename(ld_info.ld.get().?);
-                        if (std.mem.endsWith(u8, full_ld_path, standard_ld_basename)) {
-                            result.abi = ld_info.abi;
-                            break;
+                // Use it to determine ABI.
+                const full_ld_path = result.dynamic_linker.buffer[0..len];
+                for (ld_info_list) |ld_info| {
+                    const standard_ld_basename = fs.path.basename(ld_info.ld.get().?);
+                    if (std.mem.endsWith(u8, full_ld_path, standard_ld_basename)) {
+                        result.abi = ld_info.abi;
+                        break;
+                    }
+                }
+            },
+            .dynamic => if (builtin.target.os.tag == .linux and result.isGnuLibC() and
+                query.glibc_version == null)
+            {
+                var dyn_off = ph.offset;
+                const dyn_size: usize = if (hdr.is_64) @sizeOf(elf.Elf64_Dyn) else @sizeOf(elf.Elf32_Dyn);
+                const dyn_num = ph.filesz / dyn_size;
+                var dyn_buf: [16 * @sizeOf(elf.Elf64_Dyn)]u8 align(@alignOf(elf.Elf64_Dyn)) = undefined;
+                var dyn_i: usize = 0;
+                dyn: while (dyn_i < dyn_num) {
+                    // Reserve some bytes so that we can deref the 64-bit struct fields
+                    // even when the ELF file is 32-bits.
+                    const dyn_reserve: usize = @sizeOf(elf.Elf64_Dyn) - @sizeOf(elf.Elf32_Dyn);
+                    const dyn_read_byte_len = try preadAtLeast(
+                        file,
+                        dyn_buf[0 .. dyn_buf.len - dyn_reserve],
+                        dyn_off,
+                        dyn_size,
+                    );
+                    var dyn_buf_i: usize = 0;
+                    while (dyn_buf_i < dyn_read_byte_len and dyn_i < dyn_num) : ({
+                        dyn_i += 1;
+                        dyn_off += dyn_size;
+                        dyn_buf_i += dyn_size;
+                    }) {
+                        const dyn32: *elf.Elf32_Dyn = @ptrCast(@alignCast(&dyn_buf[dyn_buf_i]));
+                        const dyn64: *elf.Elf64_Dyn = @ptrCast(@alignCast(&dyn_buf[dyn_buf_i]));
+                        const tag = elfInt(hdr.is_64, need_bswap, dyn32.d_tag, dyn64.d_tag);
+                        const val = elfInt(hdr.is_64, need_bswap, dyn32.d_val, dyn64.d_val);
+                        if (tag == elf.DT_RUNPATH) {
+                            rpath_offset = val;
+                            break :dyn;
                         }
                     }
-                },
-                // We only need this for detecting glibc version.
-                elf.PT_DYNAMIC => if (builtin.target.os.tag == .linux and result.isGnuLibC() and
-                    query.glibc_version == null)
-                {
-                    var dyn_off = elfInt(is_64, need_bswap, ph32.p_offset, ph64.p_offset);
-                    const p_filesz = elfInt(is_64, need_bswap, ph32.p_filesz, ph64.p_filesz);
-                    const dyn_size: usize = if (is_64) @sizeOf(elf.Elf64_Dyn) else @sizeOf(elf.Elf32_Dyn);
-                    const dyn_num = p_filesz / dyn_size;
-                    var dyn_buf: [16 * @sizeOf(elf.Elf64_Dyn)]u8 align(@alignOf(elf.Elf64_Dyn)) = undefined;
-                    var dyn_i: usize = 0;
-                    dyn: while (dyn_i < dyn_num) {
-                        // Reserve some bytes so that we can deref the 64-bit struct fields
-                        // even when the ELF file is 32-bits.
-                        const dyn_reserve: usize = @sizeOf(elf.Elf64_Dyn) - @sizeOf(elf.Elf32_Dyn);
-                        const dyn_read_byte_len = try preadAtLeast(
-                            file,
-                            dyn_buf[0 .. dyn_buf.len - dyn_reserve],
-                            dyn_off,
-                            dyn_size,
-                        );
-                        var dyn_buf_i: usize = 0;
-                        while (dyn_buf_i < dyn_read_byte_len and dyn_i < dyn_num) : ({
-                            dyn_i += 1;
-                            dyn_off += dyn_size;
-                            dyn_buf_i += dyn_size;
-                        }) {
-                            const dyn32: *elf.Elf32_Dyn = @ptrCast(@alignCast(&dyn_buf[dyn_buf_i]));
-                            const dyn64: *elf.Elf64_Dyn = @ptrCast(@alignCast(&dyn_buf[dyn_buf_i]));
-                            const tag = elfInt(is_64, need_bswap, dyn32.d_tag, dyn64.d_tag);
-                            const val = elfInt(is_64, need_bswap, dyn32.d_val, dyn64.d_val);
-                            if (tag == elf.DT_RUNPATH) {
-                                rpath_offset = val;
-                                break :dyn;
-                            }
-                        }
-                    }
-                },
-                else => continue,
-            }
+                }
+            },
+            else => {},
         }
     }
 
     if (builtin.target.os.tag == .linux and result.isGnuLibC() and
         query.glibc_version == null)
     {
-        const shstrndx = elfInt(is_64, need_bswap, hdr32.e_shstrndx, hdr64.e_shstrndx);
-
-        var shoff = elfInt(is_64, need_bswap, hdr32.e_shoff, hdr64.e_shoff);
-        const shentsize = elfInt(is_64, need_bswap, hdr32.e_shentsize, hdr64.e_shentsize);
-        const str_section_off = shoff + @as(u64, shentsize) * @as(u64, shstrndx);
+        var shoff = hdr.shoff;
+        const str_section_off = hdr.shoff + @as(u64, hdr.shentsize) * @as(u64, hdr.shstrndx);
 
         var sh_buf: [16 * @sizeOf(elf.Elf64_Shdr)]u8 align(@alignOf(elf.Elf64_Shdr)) = undefined;
-        if (sh_buf.len < shentsize) return error.InvalidElfFile;
+        if (sh_buf.len < hdr.shentsize) return error.InvalidElfFile;
 
-        _ = try preadAtLeast(file, &sh_buf, str_section_off, shentsize);
+        _ = try preadAtLeast(file, &sh_buf, str_section_off, hdr.shentsize);
         const shstr32: *elf.Elf32_Shdr = @ptrCast(@alignCast(&sh_buf));
         const shstr64: *elf.Elf64_Shdr = @ptrCast(@alignCast(&sh_buf));
-        const shstrtab_off = elfInt(is_64, need_bswap, shstr32.sh_offset, shstr64.sh_offset);
-        const shstrtab_size = elfInt(is_64, need_bswap, shstr32.sh_size, shstr64.sh_size);
+        const shstrtab_off = elfInt(hdr.is_64, need_bswap, shstr32.sh_offset, shstr64.sh_offset);
+        const shstrtab_size = elfInt(hdr.is_64, need_bswap, shstr32.sh_size, shstr64.sh_size);
         var strtab_buf: [4096:0]u8 = undefined;
         const shstrtab_len = @min(shstrtab_size, strtab_buf.len);
         const shstrtab_read_len = try preadAtLeast(file, &strtab_buf, shstrtab_off, shstrtab_len);
         const shstrtab = strtab_buf[0..shstrtab_read_len];
 
-        const shnum = elfInt(is_64, need_bswap, hdr32.e_shnum, hdr64.e_shnum);
+        const shnum = elfInt(hdr.is_64, need_bswap, hdr.shnum, hdr.shnum);
         var sh_i: u16 = 0;
         const dynstr: ?struct { offset: u64, size: u64 } = find_dyn_str: while (sh_i < shnum) {
             // Reserve some bytes so that we can deref the 64-bit struct fields
@@ -661,22 +654,22 @@ pub fn abiAndDynamicLinkerFromFile(
                 file,
                 sh_buf[0 .. sh_buf.len - sh_reserve],
                 shoff,
-                shentsize,
+                hdr.shentsize,
             );
             var sh_buf_i: usize = 0;
             while (sh_buf_i < sh_read_byte_len and sh_i < shnum) : ({
                 sh_i += 1;
-                shoff += shentsize;
-                sh_buf_i += shentsize;
+                shoff += hdr.shentsize;
+                sh_buf_i += hdr.shentsize;
             }) {
                 const sh32: *elf.Elf32_Shdr = @ptrCast(@alignCast(&sh_buf[sh_buf_i]));
                 const sh64: *elf.Elf64_Shdr = @ptrCast(@alignCast(&sh_buf[sh_buf_i]));
-                const sh_name_off = elfInt(is_64, need_bswap, sh32.sh_name, sh64.sh_name);
+                const sh_name_off = elfInt(hdr.is_64, need_bswap, sh32.sh_name, sh64.sh_name);
                 const sh_name = mem.sliceTo(shstrtab[sh_name_off..], 0);
                 if (mem.eql(u8, sh_name, ".dynstr")) {
                     break :find_dyn_str .{
-                        .offset = elfInt(is_64, need_bswap, sh32.sh_offset, sh64.sh_offset),
-                        .size = elfInt(is_64, need_bswap, sh32.sh_size, sh64.sh_size),
+                        .offset = elfInt(hdr.is_64, need_bswap, sh32.sh_offset, sh64.sh_offset),
+                        .size = elfInt(hdr.is_64, need_bswap, sh32.sh_size, sh64.sh_size),
                     };
                 }
             }

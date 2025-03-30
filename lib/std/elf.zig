@@ -284,45 +284,6 @@ pub const VER_FLG_BASE = 1;
 /// Weak version identifier
 pub const VER_FLG_WEAK = 2;
 
-/// Program header table entry unused
-pub const PT_NULL = 0;
-/// Loadable program segment
-pub const PT_LOAD = 1;
-/// Dynamic linking information
-pub const PT_DYNAMIC = 2;
-/// Program interpreter
-pub const PT_INTERP = 3;
-/// Auxiliary information
-pub const PT_NOTE = 4;
-/// Reserved
-pub const PT_SHLIB = 5;
-/// Entry for header table itself
-pub const PT_PHDR = 6;
-/// Thread-local storage segment
-pub const PT_TLS = 7;
-/// Number of defined types
-pub const PT_NUM = 8;
-/// Start of OS-specific
-pub const PT_LOOS = 0x60000000;
-/// GCC .eh_frame_hdr segment
-pub const PT_GNU_EH_FRAME = 0x6474e550;
-/// Indicates stack executability
-pub const PT_GNU_STACK = 0x6474e551;
-/// Read-only after relocation
-pub const PT_GNU_RELRO = 0x6474e552;
-pub const PT_LOSUNW = 0x6ffffffa;
-/// Sun specific segment
-pub const PT_SUNWBSS = 0x6ffffffa;
-/// Stack segment
-pub const PT_SUNWSTACK = 0x6ffffffb;
-pub const PT_HISUNW = 0x6fffffff;
-/// End of OS-specific
-pub const PT_HIOS = 0x6fffffff;
-/// Start of processor-specific
-pub const PT_LOPROC = 0x70000000;
-/// End of processor-specific
-pub const PT_HIPROC = 0x7fffffff;
-
 /// Section header table entry unused
 pub const SHT_NULL = 0;
 /// Program data
@@ -479,6 +440,14 @@ pub const ET = enum(u16) {
 
 /// All integers are native endian.
 pub const Header = struct {
+    pub const ParseError = error{
+        InvalidElfClass,
+        InvalidElfEndian,
+        InvalidElfFile,
+        InvalidElfMagic,
+        InvalidElfVersion,
+    };
+
     is_64: bool,
     endian: std.builtin.Endian,
     os_abi: OSABI,
@@ -515,7 +484,7 @@ pub const Header = struct {
         return Header.parse(&hdr_buf);
     }
 
-    pub fn parse(hdr_buf: *align(@alignOf(Elf64_Ehdr)) const [@sizeOf(Elf64_Ehdr)]u8) !Header {
+    pub fn parse(hdr_buf: *align(@alignOf(Elf64_Ehdr)) const [@sizeOf(Elf64_Ehdr)]u8) ParseError!Header {
         const hdr32 = @as(*const Elf32_Ehdr, @ptrCast(hdr_buf));
         const hdr64 = @as(*const Elf64_Ehdr, @ptrCast(hdr_buf));
         if (!mem.eql(u8, hdr32.e_ident[0..4], MAGIC)) return error.InvalidElfMagic;
@@ -553,7 +522,9 @@ pub const Header = struct {
             break :blk @as(EM, @enumFromInt(@byteSwap(value)));
         } else hdr32.e_machine;
 
-        return @as(Header, .{
+        const phentsize = int(is_64, need_bswap, hdr32.e_phentsize, hdr64.e_phentsize);
+
+        return Header{
             .is_64 = is_64,
             .endian = endian,
             .os_abi = os_abi,
@@ -563,12 +534,12 @@ pub const Header = struct {
             .entry = int(is_64, need_bswap, hdr32.e_entry, hdr64.e_entry),
             .phoff = int(is_64, need_bswap, hdr32.e_phoff, hdr64.e_phoff),
             .shoff = int(is_64, need_bswap, hdr32.e_shoff, hdr64.e_shoff),
-            .phentsize = int(is_64, need_bswap, hdr32.e_phentsize, hdr64.e_phentsize),
+            .phentsize = phentsize,
             .phnum = int(is_64, need_bswap, hdr32.e_phnum, hdr64.e_phnum),
             .shentsize = int(is_64, need_bswap, hdr32.e_shentsize, hdr64.e_shentsize),
             .shnum = int(is_64, need_bswap, hdr32.e_shnum, hdr64.e_shnum),
             .shstrndx = int(is_64, need_bswap, hdr32.e_shstrndx, hdr64.e_shstrndx),
-        });
+        };
     }
 };
 
@@ -578,46 +549,14 @@ pub fn ProgramHeaderIterator(comptime ParseSource: anytype) type {
         parse_source: ParseSource,
         index: usize = 0,
 
-        pub fn next(self: *@This()) !?Elf64_Phdr {
+        pub fn next(self: *@This()) !?ProgramHeader {
             if (self.index >= self.elf_header.phnum) return null;
             defer self.index += 1;
-
-            if (self.elf_header.is_64) {
-                var phdr: Elf64_Phdr = undefined;
-                const offset = self.elf_header.phoff + @sizeOf(@TypeOf(phdr)) * self.index;
-                try self.parse_source.seekableStream().seekTo(offset);
-                try self.parse_source.reader().readNoEof(mem.asBytes(&phdr));
-
-                // ELF endianness matches native endianness.
-                if (self.elf_header.endian == native_endian) return phdr;
-
-                // Convert fields to native endianness.
-                mem.byteSwapAllFields(Elf64_Phdr, &phdr);
-                return phdr;
-            }
-
-            var phdr: Elf32_Phdr = undefined;
-            const offset = self.elf_header.phoff + @sizeOf(@TypeOf(phdr)) * self.index;
-            try self.parse_source.seekableStream().seekTo(offset);
-            try self.parse_source.reader().readNoEof(mem.asBytes(&phdr));
-
-            // ELF endianness does NOT match native endianness.
-            if (self.elf_header.endian != native_endian) {
-                // Convert fields to native endianness.
-                mem.byteSwapAllFields(Elf32_Phdr, &phdr);
-            }
-
-            // Convert 32-bit header to 64-bit.
-            return Elf64_Phdr{
-                .p_type = phdr.p_type,
-                .p_offset = phdr.p_offset,
-                .p_vaddr = phdr.p_vaddr,
-                .p_paddr = phdr.p_paddr,
-                .p_filesz = phdr.p_filesz,
-                .p_memsz = phdr.p_memsz,
-                .p_flags = phdr.p_flags,
-                .p_align = phdr.p_align,
-            };
+            return try ProgramHeader.parse(
+                &self.elf_header,
+                self.index,
+                self.parse_source,
+            );
         }
     };
 }
@@ -758,26 +697,249 @@ pub const Elf64_Ehdr = extern struct {
     e_shnum: Half,
     e_shstrndx: Half,
 };
-pub const Elf32_Phdr = extern struct {
-    p_type: Word,
-    p_offset: Elf32_Off,
-    p_vaddr: Elf32_Addr,
-    p_paddr: Elf32_Addr,
-    p_filesz: Word,
-    p_memsz: Word,
-    p_flags: Word,
-    p_align: Word,
+
+pub const ProgramHeader = struct {
+    pub const Elf32 = extern struct {
+        p_type: Type,
+        p_offset: Elf32_Off,
+        p_vaddr: Elf32_Addr,
+        p_paddr: Elf32_Addr,
+        p_filesz: Word,
+        p_memsz: Word,
+        p_flags: Flags,
+        p_align: Word,
+    };
+    pub const Elf64 = extern struct {
+        p_type: Type,
+        p_flags: Flags,
+        p_offset: Elf64_Off,
+        p_vaddr: Elf64_Addr,
+        p_paddr: Elf64_Addr,
+        p_filesz: Elf64_Xword,
+        p_memsz: Elf64_Xword,
+        p_align: Elf64_Xword,
+    };
+    pub const Native = switch (@sizeOf(usize)) {
+        4 => Elf32,
+        8 => Elf64,
+        else => @compileError("expected pointer size of 32 or 64"),
+    };
+
+    pub const Type = enum(Word) {
+        /// Program header table entry unused
+        null = 0,
+        /// Loadable program segment
+        load = 1,
+        /// Dynamic linking information
+        dynamic = 2,
+        /// Program interpreter
+        interp = 3,
+        /// Auxiliary information
+        note = 4,
+        /// Reserved
+        shlib = 5,
+        /// Entry for header table itself
+        phdr = 6,
+        /// Thread-local storage segment
+        tls = 7,
+        /// Number of defined types
+        num = 8,
+        /// Start of OS-specific
+        loos = 0x60000000,
+        /// GCC .eh_frame_hdr segment
+        gnu_eh_frame = 0x6474e550,
+        /// Indicates stack executability
+        gnu_stack = 0x6474e551,
+        /// Read-only after relocation
+        gnu_relro = 0x6474e552,
+        /// Sun specific segment
+        sunwbss = 0x6ffffffa,
+        /// Stack segment
+        sunwstack = 0x6ffffffb,
+        /// End of OS-specific
+        hios = 0x6fffffff,
+        /// Start of processor-specific
+        loproc = 0x70000000,
+        /// End of processor-specific
+        hiproc = 0x7fffffff,
+        _,
+
+        pub const losunw = Type.sunwbss;
+        pub const hisunw = Type.hios;
+
+        pub fn isOsSpecific(ph_type: Type) bool {
+            return @intFromEnum(Type.loos) <= @intFromEnum(ph_type) and
+                @intFromEnum(ph_type) < @intFromEnum(Type.hios);
+        }
+
+        pub fn isProcessorSpecific(ph_type: Type) bool {
+            return @intFromEnum(Type.loproc) <= @intFromEnum(ph_type) and
+                @intFromEnum(ph_type) < @intFromEnum(Type.hiproc);
+        }
+
+        pub fn format(
+            ph_type: Type,
+            comptime unused_fmt_string: []const u8,
+            options: std.fmt.FormatOptions,
+            writer: anytype,
+        ) !void {
+            _ = unused_fmt_string;
+            _ = options;
+            const p_type = switch (ph_type) {
+                .null => "NULL",
+                .load => "LOAD",
+                .dynamic => "DYNAMIC",
+                .interp => "INTERP",
+                .note => "NOTE",
+                .shlib => "SHLIB",
+                .phdr => "PHDR",
+                .tls => "TLS",
+                .num => "NUM",
+                .gnu_eh_frame => "GNU_EH_FRAME",
+                .gnu_stack => "GNU_STACK",
+                .gnu_relro => "GNU_RELRO",
+                else => return if (ph_type.isOsSpecific())
+                    try writer.print("LOOS+0x{x}", .{
+                        @intFromEnum(ph_type) - @intFromEnum(Type.loos),
+                    })
+                else if (ph_type.isProcessorSpecific())
+                    try writer.print("LOPROC+0x{x}", .{
+                        @intFromEnum(ph_type) - @intFromEnum(Type.loproc),
+                    })
+                else
+                    try writer.print("UNKNOWN (0x{x})", .{
+                        @intFromEnum(ph_type),
+                    }),
+            };
+            try writer.writeAll(p_type);
+        }
+    };
+
+    pub const Flags = packed struct(Word) {
+        execute: bool = false,
+        read: bool = false,
+        write: bool = false,
+        _pad: u17 = 0,
+        os_bits: u8 = 0,
+        proc_bits: u4 = 0,
+
+        pub fn isEmpty(self: Flags) bool {
+            const as_int: Word = @bitCast(self);
+            return as_int == 0;
+        }
+
+        pub fn format(
+            self: Flags,
+            comptime unused_fmt_string: []const u8,
+            unused_options: std.fmt.FormatOptions,
+            writer: anytype,
+        ) !void {
+            _ = unused_fmt_string;
+            _ = unused_options;
+            var flags: [3]u8 = [_]u8{'_'} ** 3;
+            if (self.execute) flags[0] = 'X';
+            if (self.write) flags[1] = 'W';
+            if (self.read) flags[2] = 'R';
+            try writer.writeAll(&flags);
+        }
+    };
+
+    type: Type,
+    flags: Flags,
+    offset: u64,
+    vaddr: usize,
+    paddr: usize,
+    filesz: usize,
+    memsz: usize,
+    @"align": usize,
+
+    pub fn format(
+        self: ProgramHeader,
+        comptime unused_fmt_string: []const u8,
+        unused_options: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        _ = unused_fmt_string;
+        _ = unused_options;
+        try writer.print("{any} : {any} : @{x} ({x}) : align({x}) : filesz({x}) : memsz({x})", .{
+            self.type,     self.flags,  self.offset, self.vaddr,
+            self.@"align", self.filesz, self.memsz,
+        });
+    }
+
+    pub fn make32(hdr: *const ProgramHeader) Elf32 {
+        return Elf32{
+            .p_type = hdr.type,
+            .p_flags = hdr.flags,
+            .p_offset = @intCast(hdr.offset),
+            .p_vaddr = @intCast(hdr.vaddr),
+            .p_paddr = @intCast(hdr.paddr),
+            .p_filesz = @intCast(hdr.filesz),
+            .p_memsz = @intCast(hdr.memsz),
+            .p_align = @intCast(hdr.@"align"),
+        };
+    }
+
+    pub fn make64(hdr: *const ProgramHeader) Elf64 {
+        return Elf64{
+            .p_type = hdr.type,
+            .p_flags = hdr.flags,
+            .p_offset = hdr.offset,
+            .p_vaddr = @intCast(hdr.vaddr),
+            .p_paddr = @intCast(hdr.paddr),
+            .p_filesz = @intCast(hdr.filesz),
+            .p_memsz = @intCast(hdr.memsz),
+            .p_align = @intCast(hdr.@"align"),
+        };
+    }
+
+    pub fn parse(
+        hdr: *const Header,
+        index: usize,
+        source: anytype,
+    ) !ProgramHeader {
+        if (hdr.is_64) {
+            var phdr: Elf64 = undefined;
+            const offset = hdr.phoff + @sizeOf(Elf64) * index;
+            try source.seekableStream().seekTo(offset);
+            try source.reader().readNoEof(mem.asBytes(&phdr));
+
+            if (hdr.endian != native_endian)
+                mem.byteSwapAllFields(Elf64, &phdr);
+
+            return ProgramHeader{
+                .type = phdr.p_type,
+                .flags = phdr.p_flags,
+                .offset = phdr.p_offset,
+                .vaddr = @intCast(phdr.p_vaddr),
+                .paddr = @intCast(phdr.p_paddr),
+                .filesz = @intCast(phdr.p_filesz),
+                .memsz = @intCast(phdr.p_memsz),
+                .@"align" = @intCast(phdr.p_align),
+            };
+        } else {
+            var phdr: Elf32 = undefined;
+            const offset = hdr.phoff + @sizeOf(Elf32) * index;
+            try source.seekableStream().seekTo(offset);
+            try source.reader().readNoEof(mem.asBytes(&phdr));
+
+            if (hdr.endian != native_endian)
+                mem.byteSwapAllFields(Elf32, &phdr);
+
+            return ProgramHeader{
+                .type = phdr.p_type,
+                .flags = phdr.p_flags,
+                .offset = @intCast(phdr.p_offset),
+                .vaddr = phdr.p_vaddr,
+                .paddr = phdr.p_paddr,
+                .filesz = @intCast(phdr.p_filesz),
+                .memsz = @intCast(phdr.p_memsz),
+                .@"align" = @intCast(phdr.p_align),
+            };
+        }
+    }
 };
-pub const Elf64_Phdr = extern struct {
-    p_type: Word,
-    p_flags: Word,
-    p_offset: Elf64_Off,
-    p_vaddr: Elf64_Addr,
-    p_paddr: Elf64_Addr,
-    p_filesz: Elf64_Xword,
-    p_memsz: Elf64_Xword,
-    p_align: Elf64_Xword,
-};
+
 pub const Elf32_Shdr = extern struct {
     sh_name: Word,
     sh_type: Word,
@@ -1035,8 +1197,8 @@ comptime {
     assert(@sizeOf(Elf32_Ehdr) == 52);
     assert(@sizeOf(Elf64_Ehdr) == 64);
 
-    assert(@sizeOf(Elf32_Phdr) == 32);
-    assert(@sizeOf(Elf64_Phdr) == 56);
+    assert(@sizeOf(ProgramHeader.Elf32) == 32);
+    assert(@sizeOf(ProgramHeader.Elf64) == 56);
 
     assert(@sizeOf(Elf32_Shdr) == 40);
     assert(@sizeOf(Elf64_Shdr) == 64);
@@ -1050,11 +1212,6 @@ pub const Auxv = switch (@sizeOf(usize)) {
 pub const Ehdr = switch (@sizeOf(usize)) {
     4 => Elf32_Ehdr,
     8 => Elf64_Ehdr,
-    else => @compileError("expected pointer size of 32 or 64"),
-};
-pub const Phdr = switch (@sizeOf(usize)) {
-    4 => Elf32_Phdr,
-    8 => Elf64_Phdr,
     else => @compileError("expected pointer size of 32 or 64"),
 };
 pub const Dyn = switch (@sizeOf(usize)) {
@@ -1714,21 +1871,6 @@ pub const SHF_MIPS_STRING = 0x80000000;
 
 /// Make code section unreadable when in execute-only mode
 pub const SHF_ARM_PURECODE = 0x2000000;
-
-/// Execute
-pub const PF_X = 1;
-
-/// Write
-pub const PF_W = 2;
-
-/// Read
-pub const PF_R = 4;
-
-/// Bits for operating system-specific semantics.
-pub const PF_MASKOS = 0x0ff00000;
-
-/// Bits for processor-specific semantics.
-pub const PF_MASKPROC = 0xf0000000;
 
 /// Undefined section
 pub const SHN_UNDEF = 0;

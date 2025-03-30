@@ -1916,7 +1916,7 @@ const ElfDumper = struct {
         }
 
         const shdrs = @as([*]align(1) const elf.Elf64_Shdr, @ptrCast(bytes.ptr + hdr.e_shoff))[0..hdr.e_shnum];
-        const phdrs = @as([*]align(1) const elf.Elf64_Phdr, @ptrCast(bytes.ptr + hdr.e_phoff))[0..hdr.e_phnum];
+        const phdrs = @as([*]align(1) const elf.ProgramHeader, @ptrCast(bytes.ptr + hdr.e_phoff))[0..hdr.e_phnum];
 
         var ctx = ObjectContext{
             .gpa = gpa,
@@ -1994,7 +1994,7 @@ const ElfDumper = struct {
         data: []const u8,
         hdr: elf.Elf64_Ehdr,
         shdrs: []align(1) const elf.Elf64_Shdr,
-        phdrs: []align(1) const elf.Elf64_Phdr,
+        phdrs: []align(1) const elf.ProgramHeader,
         shstrtab: []const u8,
         symtab: Symtab = .{},
         dysymtab: Symtab = .{},
@@ -2012,31 +2012,31 @@ const ElfDumper = struct {
 
             for (ctx.phdrs, 0..) |phdr, phndx| {
                 try writer.print("phdr {d}\n", .{phndx});
-                try writer.print("type {s}\n", .{fmtPhType(phdr.p_type)});
-                try writer.print("vaddr {x}\n", .{phdr.p_vaddr});
-                try writer.print("paddr {x}\n", .{phdr.p_paddr});
-                try writer.print("offset {x}\n", .{phdr.p_offset});
-                try writer.print("memsz {x}\n", .{phdr.p_memsz});
-                try writer.print("filesz {x}\n", .{phdr.p_filesz});
-                try writer.print("align {x}\n", .{phdr.p_align});
+                try writer.print("type {}\n", .{phdr.type});
+                try writer.print("vaddr {x}\n", .{phdr.vaddr});
+                try writer.print("paddr {x}\n", .{phdr.paddr});
+                try writer.print("offset {x}\n", .{phdr.offset});
+                try writer.print("memsz {x}\n", .{phdr.memsz});
+                try writer.print("filesz {x}\n", .{phdr.filesz});
+                try writer.print("align {x}\n", .{phdr.@"align"});
 
                 {
-                    const flags = phdr.p_flags;
+                    const flags = phdr.flags;
                     try writer.writeAll("flags");
-                    if (flags > 0) try writer.writeByte(' ');
-                    if (flags & elf.PF_R != 0) {
+                    if (!flags.isEmpty()) try writer.writeByte(' ');
+                    if (flags.read) {
                         try writer.writeByte('R');
                     }
-                    if (flags & elf.PF_W != 0) {
+                    if (flags.write) {
                         try writer.writeByte('W');
                     }
-                    if (flags & elf.PF_X != 0) {
+                    if (flags.execute) {
                         try writer.writeByte('E');
                     }
-                    if (flags & elf.PF_MASKOS != 0) {
+                    if (flags.os_bits != 0) {
                         try writer.writeAll("OS");
                     }
-                    if (flags & elf.PF_MASKPROC != 0) {
+                    if (flags.proc_bits != 0) {
                         try writer.writeAll("PROC");
                     }
                     try writer.writeByte('\n');
@@ -2370,40 +2370,6 @@ const ElfDumper = struct {
             } else "UNKNOWN",
         };
         try writer.writeAll(name);
-    }
-
-    fn fmtPhType(ph_type: u32) std.fmt.Formatter(formatPhType) {
-        return .{ .data = ph_type };
-    }
-
-    fn formatPhType(
-        ph_type: u32,
-        comptime unused_fmt_string: []const u8,
-        options: std.fmt.FormatOptions,
-        writer: anytype,
-    ) !void {
-        _ = unused_fmt_string;
-        _ = options;
-        const p_type = switch (ph_type) {
-            elf.PT_NULL => "NULL",
-            elf.PT_LOAD => "LOAD",
-            elf.PT_DYNAMIC => "DYNAMIC",
-            elf.PT_INTERP => "INTERP",
-            elf.PT_NOTE => "NOTE",
-            elf.PT_SHLIB => "SHLIB",
-            elf.PT_PHDR => "PHDR",
-            elf.PT_TLS => "TLS",
-            elf.PT_NUM => "NUM",
-            elf.PT_GNU_EH_FRAME => "GNU_EH_FRAME",
-            elf.PT_GNU_STACK => "GNU_STACK",
-            elf.PT_GNU_RELRO => "GNU_RELRO",
-            else => if (elf.PT_LOOS <= ph_type and ph_type < elf.PT_HIOS) {
-                return try writer.print("LOOS+0x{x}", .{ph_type - elf.PT_LOOS});
-            } else if (elf.PT_LOPROC <= ph_type and ph_type < elf.PT_HIPROC) {
-                return try writer.print("LOPROC+0x{x}", .{ph_type - elf.PT_LOPROC});
-            } else "UNKNOWN",
-        };
-        try writer.writeAll(p_type);
     }
 };
 

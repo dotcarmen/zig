@@ -89,7 +89,7 @@ pub fn get_DYNAMIC() ?[*]elf.Dyn {
     return @extern([*]elf.Dyn, .{ .name = "_DYNAMIC", .linkage = .weak });
 }
 
-pub fn linkmap_iterator(phdrs: []elf.Phdr) error{InvalidExe}!LinkMap.Iterator {
+pub fn linkmap_iterator(phdrs: []elf.ProgramHeader.Native) error{InvalidExe}!LinkMap.Iterator {
     _ = phdrs;
     const _DYNAMIC = get_DYNAMIC() orelse {
         // No PT_DYNAMIC means this is either a statically-linked program or a
@@ -255,10 +255,10 @@ pub const ElfDynLib = struct {
                 i += 1;
                 ph_addr += eh.e_phentsize;
             }) {
-                const ph = @as(*elf.Phdr, @ptrFromInt(ph_addr));
+                const ph = @as(*elf.ProgramHeader.Native, @ptrFromInt(ph_addr));
                 switch (ph.p_type) {
-                    elf.PT_LOAD => virt_addr_end = @max(virt_addr_end, ph.p_vaddr + ph.p_memsz),
-                    elf.PT_DYNAMIC => maybe_dynv = @as([*]usize, @ptrFromInt(elf_addr + ph.p_offset)),
+                    .load => virt_addr_end = @max(virt_addr_end, ph.p_vaddr + ph.p_memsz),
+                    .dynamic => maybe_dynv = @as([*]usize, @ptrFromInt(elf_addr + ph.p_offset)),
                     else => {},
                 }
             }
@@ -286,9 +286,9 @@ pub const ElfDynLib = struct {
                 i += 1;
                 ph_addr += eh.e_phentsize;
             }) {
-                const ph = @as(*elf.Phdr, @ptrFromInt(ph_addr));
+                const ph = @as(*elf.ProgramHeader.Native, @ptrFromInt(ph_addr));
                 switch (ph.p_type) {
-                    elf.PT_LOAD => {
+                    .load => {
                         // The VirtAddr may not be page-aligned; in such case there will be
                         // extra nonsense mapped before/after the VirtAddr,MemSiz
                         const aligned_addr = (base + ph.p_vaddr) & ~(@as(usize, page_size) - 1);
@@ -296,7 +296,7 @@ pub const ElfDynLib = struct {
                         const extended_memsz = mem.alignForward(usize, ph.p_memsz + extra_bytes, page_size);
                         const ptr = @as([*]align(std.heap.page_size_min) u8, @ptrFromInt(aligned_addr));
                         const prot = elfToMmapProt(ph.p_flags);
-                        if ((ph.p_flags & elf.PF_W) == 0) {
+                        if (ph.p_flags.write) {
                             // If it does not need write access, it can be mapped from the fd.
                             _ = try posix.mmap(
                                 ptr,
@@ -524,11 +524,11 @@ pub const ElfDynLib = struct {
         return null;
     }
 
-    fn elfToMmapProt(elf_prot: u64) u32 {
+    fn elfToMmapProt(elf_prot: elf.ProgramHeader.Flags) u32 {
         var result: u32 = posix.PROT.NONE;
-        if ((elf_prot & elf.PF_R) != 0) result |= posix.PROT.READ;
-        if ((elf_prot & elf.PF_W) != 0) result |= posix.PROT.WRITE;
-        if ((elf_prot & elf.PF_X) != 0) result |= posix.PROT.EXEC;
+        if (elf_prot.read) result |= posix.PROT.READ;
+        if (elf_prot.write) result |= posix.PROT.WRITE;
+        if (elf_prot.execute) result |= posix.PROT.EXEC;
         return result;
     }
 };

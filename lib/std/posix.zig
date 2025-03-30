@@ -5642,7 +5642,7 @@ pub fn dl_iterate_phdr(
     // Make sure the base address points to an ELF image.
     assert(mem.eql(u8, ehdr.e_ident[0..4], elf.MAGIC));
     const n_phdr = ehdr.e_phnum;
-    const phdrs = (@as([*]elf.Phdr, @ptrFromInt(elf_base + ehdr.e_phoff)))[0..n_phdr];
+    const phdrs = (@as([*]elf.ProgramHeader.Native, @ptrFromInt(elf_base + ehdr.e_phoff)))[0..n_phdr];
 
     var it = dl.linkmap_iterator(phdrs) catch unreachable;
 
@@ -5652,7 +5652,7 @@ pub fn dl_iterate_phdr(
         // Find the base address for the ELF image, if this is a PIE the value
         // is non-zero.
         const base_address = for (phdrs) |*phdr| {
-            if (phdr.p_type == elf.PT_PHDR) {
+            if (phdr.p_type == .phdr) {
                 break @intFromPtr(phdrs.ptr) - phdr.p_vaddr;
                 // We could try computing the difference between _DYNAMIC and
                 // the p_vaddr of the PT_DYNAMIC section, but using the phdr is
@@ -5672,7 +5672,7 @@ pub fn dl_iterate_phdr(
 
     // Last return value from the callback function.
     while (it.next()) |entry| {
-        var phdr: [*]elf.Phdr = undefined;
+        var phdr: [*]elf.ProgramHeader.Native = undefined;
         var phnum: u16 = undefined;
 
         if (entry.l_addr != 0) {

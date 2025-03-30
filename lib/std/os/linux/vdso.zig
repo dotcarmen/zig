@@ -19,14 +19,14 @@ pub fn lookup(vername: []const u8, name: []const u8) usize {
             i += 1;
             ph_addr += eh.e_phentsize;
         }) {
-            const this_ph = @as(*elf.Phdr, @ptrFromInt(ph_addr));
+            const this_ph = @as(*elf.ProgramHeader.Native, @ptrFromInt(ph_addr));
             switch (this_ph.p_type) {
                 // On WSL1 as well as older kernels, the VDSO ELF image is pre-linked in the upper half
                 // of the memory space (e.g. p_vaddr = 0xffffffffff700000 on WSL1).
                 // Wrapping operations are used on this line as well as subsequent calculations relative to base
                 // (lines 47, 78) to ensure no overflow check is tripped.
-                elf.PT_LOAD => base = vdso_addr +% this_ph.p_offset -% this_ph.p_vaddr,
-                elf.PT_DYNAMIC => maybe_dynv = @as([*]usize, @ptrFromInt(vdso_addr + this_ph.p_offset)),
+                .load => base = vdso_addr +% this_ph.p_offset -% this_ph.p_vaddr,
+                .dynamic => maybe_dynv = @as([*]usize, @ptrFromInt(vdso_addr + this_ph.p_offset)),
                 else => {},
             }
         }

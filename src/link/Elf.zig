@@ -142,7 +142,7 @@ const SectionIndexes = struct {
     symtab: ?u32 = null,
 };
 
-const ProgramHeaderList = std.ArrayListUnmanaged(elf.Elf64_Phdr);
+const ProgramHeaderList = std.ArrayListUnmanaged(elf.ProgramHeader);
 
 const OptionalProgramHeaderIndex = enum(u16) {
     none = std.math.maxInt(u16),
@@ -566,7 +566,7 @@ fn detectAllocCollision(self: *Elf, start: u64, size: u64) !?u64 {
     }
 
     for (self.phdrs.items) |phdr| {
-        if (phdr.p_type != elf.PT_LOAD) continue;
+        if (phdr.type != .load) continue;
         const increased_size = padToIdeal(phdr.p_filesz);
         const test_end = phdr.p_offset +| increased_size;
         if (start < test_end) {
@@ -2187,11 +2187,11 @@ fn writePhdrTable(self: *Elf) !void {
 
     switch (self.ptr_width) {
         .p32 => {
-            const buf = try gpa.alloc(elf.Elf32_Phdr, self.phdrs.items.len);
+            const buf = try gpa.alloc(elf.ProgramHeader.Elf32, self.phdrs.items.len);
             defer gpa.free(buf);
 
             for (buf, 0..) |*phdr, i| {
-                phdr.* = phdrTo32(self.phdrs.items[i]);
+                phdr.* = self.phdrs.items[i].make32();
                 if (foreign_endian) {
                     mem.byteSwapAllFields(elf.Elf32_Phdr, phdr);
                 }
@@ -2199,11 +2199,11 @@ fn writePhdrTable(self: *Elf) !void {
             try self.pwriteAll(mem.sliceAsBytes(buf), phdr_table.p_offset);
         },
         .p64 => {
-            const buf = try gpa.alloc(elf.Elf64_Phdr, self.phdrs.items.len);
+            const buf = try gpa.alloc(elf.ProgramHeader.Elf64, self.phdrs.items.len);
             defer gpa.free(buf);
 
             for (buf, 0..) |*phdr, i| {
-                phdr.* = self.phdrs.items[i];
+                phdr.* = self.phdrs.items[i].make64();
                 if (foreign_endian) {
                     mem.byteSwapAllFields(elf.Elf64_Phdr, phdr);
                 }
@@ -2821,27 +2821,30 @@ fn initSpecialPhdrs(self: *Elf) !void {
 
     if (self.section_indexes.interp != null and self.phdr_indexes.interp == .none) {
         self.phdr_indexes.interp = (try self.addPhdr(.{
-            .type = elf.PT_INTERP,
-            .flags = elf.PF_R,
+            .type = .interp,
+            .flags = .{ .read = true },
             .@"align" = 1,
         })).toOptional();
     }
     if (self.section_indexes.dynamic != null and self.phdr_indexes.dynamic == .none) {
         self.phdr_indexes.dynamic = (try self.addPhdr(.{
-            .type = elf.PT_DYNAMIC,
-            .flags = elf.PF_R | elf.PF_W,
+            .type = .dynamic,
+            .flags = .{
+                .read = true,
+                .write = true,
+            },
         })).toOptional();
     }
     if (self.section_indexes.eh_frame_hdr != null and self.phdr_indexes.gnu_eh_frame == .none) {
         self.phdr_indexes.gnu_eh_frame = (try self.addPhdr(.{
-            .type = elf.PT_GNU_EH_FRAME,
-            .flags = elf.PF_R,
+            .type = .gnu_eh_frame,
+            .flags = .{ .read = true },
         })).toOptional();
     }
     if (self.phdr_indexes.gnu_stack == .none) {
         self.phdr_indexes.gnu_stack = (try self.addPhdr(.{
-            .type = elf.PT_GNU_STACK,
-            .flags = elf.PF_W | elf.PF_R,
+            .type = .gnu_stack,
+            .flags = .{ .write = true, .read = true },
             .memsz = self.base.stack_size,
             .@"align" = 1,
         })).toOptional();
@@ -2852,8 +2855,8 @@ fn initSpecialPhdrs(self: *Elf) !void {
     } else false;
     if (has_tls and self.phdr_indexes.tls == .none) {
         self.phdr_indexes.tls = (try self.addPhdr(.{
-            .type = elf.PT_TLS,
-            .flags = elf.PF_R,
+            .type = .tls,
+            .flags = .{ .read = true },
             .@"align" = 1,
         })).toOptional();
     }
@@ -2990,15 +2993,15 @@ fn setHashSections(self: *Elf) !void {
     }
 }
 
-fn phdrRank(phdr: elf.Elf64_Phdr) u8 {
-    return switch (phdr.p_type) {
-        elf.PT_NULL => 0,
-        elf.PT_PHDR => 1,
-        elf.PT_INTERP => 2,
-        elf.PT_LOAD => 3,
-        elf.PT_DYNAMIC, elf.PT_TLS => 4,
-        elf.PT_GNU_EH_FRAME => 5,
-        elf.PT_GNU_STACK => 6,
+fn phdrRank(phdr: elf.ProgramHeader) u8 {
+    return switch (phdr.type) {
+        .null => 0,
+        .phdr => 1,
+        .interp => 2,
+        .load => 3,
+        .dynamic, .tls => 4,
+        .gnu_eh_frame => 5,
+        .gnu_stack => 6,
         else => 7,
     };
 }
@@ -3358,13 +3361,14 @@ pub fn updateShStrtabSize(self: *Elf) void {
     }
 }
 
-fn shdrToPhdrFlags(sh_flags: u64) u32 {
+fn shdrToPhdrFlags(sh_flags: u64) elf.ProgramHeader.Flags {
     const write = sh_flags & elf.SHF_WRITE != 0;
     const exec = sh_flags & elf.SHF_EXECINSTR != 0;
-    var out_flags: u32 = elf.PF_R;
-    if (write) out_flags |= elf.PF_W;
-    if (exec) out_flags |= elf.PF_X;
-    return out_flags;
+    return .{
+        .read = true,
+        .write = write,
+        .execute = exec,
+    };
 }
 
 /// Returns maximum number of program headers that may be emitted by the linker.
@@ -3402,8 +3406,8 @@ fn allocatePhdrTable(self: *Elf) error{OutOfMemory}!void {
         .p64 => @sizeOf(elf.Elf64_Ehdr),
     };
     const phsize: u64 = switch (self.ptr_width) {
-        .p32 => @sizeOf(elf.Elf32_Phdr),
-        .p64 => @sizeOf(elf.Elf64_Phdr),
+        .p32 => @sizeOf(elf.ProgramHeader.Elf32),
+        .p64 => @sizeOf(elf.ProgramHeader.Elf64),
     };
     const needed_size = self.phdrs.items.len * phsize;
     const available_space = self.allocatedSize(phdr_table.p_offset);
@@ -3419,10 +3423,10 @@ fn allocatePhdrTable(self: *Elf) error{OutOfMemory}!void {
         err.addNote("required 0x{x}, available 0x{x}", .{ needed_size, available_space });
     }
 
-    phdr_table_load.p_filesz = needed_size + ehsize;
-    phdr_table_load.p_memsz = needed_size + ehsize;
-    phdr_table.p_filesz = needed_size;
-    phdr_table.p_memsz = needed_size;
+    phdr_table_load.filesz = needed_size + ehsize;
+    phdr_table_load.memsz = needed_size + ehsize;
+    phdr_table.filesz = needed_size;
+    phdr_table.memsz = needed_size;
 }
 
 /// Allocates alloc sections and creates load segments for sections
@@ -3488,7 +3492,7 @@ pub fn allocateAllocSections(self: *Elf) !void {
     // of any section that is contained in a cover and use it to align
     // the start address of the segement (and first section).
     const phdr_table = &self.phdrs.items[self.phdr_indexes.table_load.int().?];
-    var addr = phdr_table.p_vaddr + phdr_table.p_memsz;
+    var addr = phdr_table.vaddr + phdr_table.memsz;
 
     for (covers) |cover| {
         if (cover.items.len == 0) continue;
@@ -3551,10 +3555,10 @@ pub fn allocateAllocSections(self: *Elf) !void {
         const phdr = &self.phdrs.items[phndx.int()];
         const allocated_size = self.allocatedSize(phdr.p_offset);
         if (filesz > allocated_size) {
-            const old_offset = phdr.p_offset;
-            phdr.p_offset = 0;
+            const old_offset = phdr.offset;
+            phdr.offset = 0;
             var new_offset = try self.findFreeSpace(filesz, @"align");
-            phdr.p_offset = new_offset;
+            phdr.offset = new_offset;
 
             log.debug("moving phdr({d}) from 0x{x} to 0x{x}", .{ phndx, old_offset, new_offset });
 
@@ -3590,11 +3594,11 @@ pub fn allocateAllocSections(self: *Elf) !void {
             }
         }
 
-        phdr.p_vaddr = first.sh_addr;
-        phdr.p_paddr = first.sh_addr;
-        phdr.p_memsz = memsz;
-        phdr.p_filesz = filesz;
-        phdr.p_align = @"align";
+        phdr.vaddr = first.sh_addr;
+        phdr.paddr = first.sh_addr;
+        phdr.memsz = memsz;
+        phdr.filesz = filesz;
+        phdr.@"align" = @"align";
 
         addr = mem.alignForward(u64, addr, self.page_size);
     }
@@ -3644,12 +3648,12 @@ fn allocateSpecialPhdrs(self: *Elf) void {
         if (pair[0].int()) |index| {
             const shdr = slice.items(.shdr)[pair[1].?];
             const phdr = &self.phdrs.items[index];
-            phdr.p_align = shdr.sh_addralign;
-            phdr.p_offset = shdr.sh_offset;
-            phdr.p_vaddr = shdr.sh_addr;
-            phdr.p_paddr = shdr.sh_addr;
-            phdr.p_filesz = shdr.sh_size;
-            phdr.p_memsz = shdr.sh_size;
+            phdr.@"align" = shdr.sh_addralign;
+            phdr.offset = shdr.sh_offset;
+            phdr.vaddr = shdr.sh_addr;
+            phdr.paddr = shdr.sh_addr;
+            phdr.filesz = shdr.sh_size;
+            phdr.memsz = shdr.sh_size;
         }
     }
 
@@ -3666,25 +3670,25 @@ fn allocateSpecialPhdrs(self: *Elf) void {
                 shndx += 1;
                 continue;
             }
-            phdr.p_offset = shdr.sh_offset;
-            phdr.p_vaddr = shdr.sh_addr;
-            phdr.p_paddr = shdr.sh_addr;
-            phdr.p_align = shdr.sh_addralign;
+            phdr.offset = shdr.sh_offset;
+            phdr.vaddr = shdr.sh_addr;
+            phdr.paddr = shdr.sh_addr;
+            phdr.@"align" = shdr.sh_addralign;
             shndx += 1;
-            phdr.p_align = @max(phdr.p_align, shdr.sh_addralign);
+            phdr.@"align" = @max(phdr.@"align", shdr.sh_addralign);
             if (shdr.sh_type != elf.SHT_NOBITS) {
-                phdr.p_filesz = shdr.sh_offset + shdr.sh_size - phdr.p_offset;
+                phdr.filesz = shdr.sh_offset + shdr.sh_size - phdr.offset;
             }
-            phdr.p_memsz = shdr.sh_addr + shdr.sh_size - phdr.p_vaddr;
+            phdr.memsz = shdr.sh_addr + shdr.sh_size - phdr.vaddr;
 
             while (shndx < shdrs.len) : (shndx += 1) {
                 const next = shdrs[shndx];
                 if (next.sh_flags & elf.SHF_TLS == 0) break;
-                phdr.p_align = @max(phdr.p_align, next.sh_addralign);
+                phdr.@"align" = @max(phdr.@"align", next.sh_addralign);
                 if (next.sh_type != elf.SHT_NOBITS) {
-                    phdr.p_filesz = next.sh_offset + next.sh_size - phdr.p_offset;
+                    phdr.filesz = next.sh_offset + next.sh_size - phdr.offset;
                 }
-                phdr.p_memsz = next.sh_addr + next.sh_size - phdr.p_vaddr;
+                phdr.memsz = next.sh_addr + next.sh_size - phdr.vaddr;
             }
         }
     }
@@ -4090,19 +4094,6 @@ pub fn archPtrWidthBytes(self: Elf) u8 {
     return @intCast(@divExact(self.getTarget().ptrBitWidth(), 8));
 }
 
-fn phdrTo32(phdr: elf.Elf64_Phdr) elf.Elf32_Phdr {
-    return .{
-        .p_type = phdr.p_type,
-        .p_flags = phdr.p_flags,
-        .p_offset = @as(u32, @intCast(phdr.p_offset)),
-        .p_vaddr = @as(u32, @intCast(phdr.p_vaddr)),
-        .p_paddr = @as(u32, @intCast(phdr.p_paddr)),
-        .p_filesz = @as(u32, @intCast(phdr.p_filesz)),
-        .p_memsz = @as(u32, @intCast(phdr.p_memsz)),
-        .p_align = @as(u32, @intCast(phdr.p_align)),
-    };
-}
-
 fn shdrTo32(shdr: elf.Elf64_Shdr) elf.Elf32_Shdr {
     return .{
         .sh_name = shdr.sh_name,
@@ -4213,40 +4204,23 @@ pub fn isEffectivelyDynLib(self: Elf) bool {
 }
 
 fn getPhdr(self: *Elf, opts: struct {
-    type: u32 = 0,
-    flags: u32 = 0,
+    type: elf.ProgramHeader.Type = .null,
+    flags: elf.ProgramHeader.Flags = .{},
 }) OptionalProgramHeaderIndex {
     for (self.phdrs.items, 0..) |phdr, phndx| {
         if (self.phdr_indexes.table_load.int()) |index| {
             if (phndx == index) continue;
         }
-        if (phdr.p_type == opts.type and phdr.p_flags == opts.flags)
+        if (phdr.type == opts.type and phdr.flags == opts.flags)
             return @enumFromInt(phndx);
     }
     return .none;
 }
 
-fn addPhdr(self: *Elf, opts: struct {
-    type: u32 = 0,
-    flags: u32 = 0,
-    @"align": u64 = 0,
-    offset: u64 = 0,
-    addr: u64 = 0,
-    filesz: u64 = 0,
-    memsz: u64 = 0,
-}) error{OutOfMemory}!ProgramHeaderIndex {
+fn addPhdr(self: *Elf, phdr: elf.ProgramHeader) error{OutOfMemory}!ProgramHeaderIndex {
     const gpa = self.base.comp.gpa;
     const index: ProgramHeaderIndex = @enumFromInt(self.phdrs.items.len);
-    try self.phdrs.append(gpa, .{
-        .p_type = opts.type,
-        .p_flags = opts.flags,
-        .p_offset = opts.offset,
-        .p_vaddr = opts.addr,
-        .p_paddr = opts.addr,
-        .p_filesz = opts.filesz,
-        .p_memsz = opts.memsz,
-        .p_align = opts.@"align",
-    });
+    try self.phdrs.append(gpa, phdr);
     return index;
 }
 
@@ -4496,9 +4470,9 @@ pub fn tpAddress(self: *Elf) i64 {
     const index = self.phdr_indexes.tls.int() orelse return 0;
     const phdr = self.phdrs.items[index];
     const addr = switch (self.getTarget().cpu.arch) {
-        .x86_64 => mem.alignForward(u64, phdr.p_vaddr + phdr.p_memsz, phdr.p_align),
-        .aarch64 => mem.alignBackward(u64, phdr.p_vaddr - 16, phdr.p_align),
-        .riscv64 => phdr.p_vaddr,
+        .x86_64 => mem.alignForward(u64, phdr.vaddr + phdr.memsz, phdr.@"align"),
+        .aarch64 => mem.alignBackward(u64, phdr.vaddr - 16, phdr.@"align"),
+        .riscv64 => phdr.vaddr,
         else => |arch| std.debug.panic("TODO implement getTpAddress for {s}", .{@tagName(arch)}),
     };
     return @intCast(addr);
@@ -4507,13 +4481,13 @@ pub fn tpAddress(self: *Elf) i64 {
 pub fn dtpAddress(self: *Elf) i64 {
     const index = self.phdr_indexes.tls.int() orelse return 0;
     const phdr = self.phdrs.items[index];
-    return @intCast(phdr.p_vaddr);
+    return @intCast(phdr.vaddr);
 }
 
 pub fn tlsAddress(self: *Elf) i64 {
     const index = self.phdr_indexes.tls.int() orelse return 0;
     const phdr = self.phdrs.items[index];
-    return @intCast(phdr.p_vaddr);
+    return @intCast(phdr.vaddr);
 }
 
 pub fn getShString(self: Elf, off: u32) [:0]const u8 {
@@ -4726,47 +4700,6 @@ const FormatPhdrCtx = struct {
     phdr: elf.Elf64_Phdr,
 };
 
-fn fmtPhdr(self: *Elf, phdr: elf.Elf64_Phdr) std.fmt.Formatter(formatPhdr) {
-    return .{ .data = .{
-        .phdr = phdr,
-        .elf_file = self,
-    } };
-}
-
-fn formatPhdr(
-    ctx: FormatPhdrCtx,
-    comptime unused_fmt_string: []const u8,
-    options: std.fmt.FormatOptions,
-    writer: anytype,
-) !void {
-    _ = options;
-    _ = unused_fmt_string;
-    const phdr = ctx.phdr;
-    const write = phdr.p_flags & elf.PF_W != 0;
-    const read = phdr.p_flags & elf.PF_R != 0;
-    const exec = phdr.p_flags & elf.PF_X != 0;
-    var flags: [3]u8 = [_]u8{'_'} ** 3;
-    if (exec) flags[0] = 'X';
-    if (write) flags[1] = 'W';
-    if (read) flags[2] = 'R';
-    const p_type = switch (phdr.p_type) {
-        elf.PT_LOAD => "LOAD",
-        elf.PT_TLS => "TLS",
-        elf.PT_GNU_EH_FRAME => "GNU_EH_FRAME",
-        elf.PT_GNU_STACK => "GNU_STACK",
-        elf.PT_DYNAMIC => "DYNAMIC",
-        elf.PT_INTERP => "INTERP",
-        elf.PT_NULL => "NULL",
-        elf.PT_PHDR => "PHDR",
-        elf.PT_NOTE => "NOTE",
-        else => "UNKNOWN",
-    };
-    try writer.print("{s} : {s} : @{x} ({x}) : align({x}) : filesz({x}) : memsz({x})", .{
-        p_type,       flags,         phdr.p_offset, phdr.p_vaddr,
-        phdr.p_align, phdr.p_filesz, phdr.p_memsz,
-    });
-}
-
 pub fn dumpState(self: *Elf) std.fmt.Formatter(fmtDumpState) {
     return .{ .data = self };
 }
@@ -4859,7 +4792,7 @@ fn fmtDumpState(
     }
     try writer.writeAll("\nOutput phdrs\n");
     for (self.phdrs.items, 0..) |phdr, phndx| {
-        try writer.print("  phdr({d}) : {}\n", .{ phndx, self.fmtPhdr(phdr) });
+        try writer.print("  phdr({d}) : {}\n", .{ phndx, phdr });
     }
 }
 

@@ -373,7 +373,7 @@ fn lookupModuleNameDl(self: *SelfInfo, address: usize) ?[]const u8 {
             if (context.address < info.addr) return;
             const phdrs = info.phdr[0..info.phnum];
             for (phdrs) |*phdr| {
-                if (phdr.p_type != elf.PT_LOAD) continue;
+                if (phdr.p_type != .load) continue;
 
                 const seg_start = info.addr +% phdr.p_vaddr;
                 const seg_end = seg_start + phdr.p_memsz;
@@ -415,7 +415,7 @@ fn lookupModuleDl(self: *SelfInfo, address: usize) !*Module {
 
             const phdrs = info.phdr[0..info.phnum];
             for (phdrs) |*phdr| {
-                if (phdr.p_type != elf.PT_LOAD) continue;
+                if (phdr.p_type != .load) continue;
 
                 // Overflowing addition is used to handle the case of VSDOs having a p_vaddr = 0xffffffffff700000
                 const seg_start = info.addr +% phdr.p_vaddr;
@@ -431,7 +431,7 @@ fn lookupModuleDl(self: *SelfInfo, address: usize) !*Module {
 
             for (info.phdr[0..info.phnum]) |phdr| {
                 switch (phdr.p_type) {
-                    elf.PT_NOTE => {
+                    .note => {
                         // Look for .note.gnu.build-id
                         const note_bytes = @as([*]const u8, @ptrFromInt(info.addr + phdr.p_vaddr))[0..phdr.p_memsz];
                         const name_size = mem.readInt(u32, note_bytes[0..4], native_endian);
@@ -442,7 +442,7 @@ fn lookupModuleDl(self: *SelfInfo, address: usize) !*Module {
                         if (!mem.eql(u8, "GNU\x00", note_bytes[12..16])) continue;
                         context.build_id = note_bytes[16..][0..desc_size];
                     },
-                    elf.PT_GNU_EH_FRAME => {
+                    .gnu_eh_frame => {
                         context.gnu_eh_frame = @as([*]const u8, @ptrFromInt(info.addr + phdr.p_vaddr))[0..phdr.p_memsz];
                     },
                     else => {},

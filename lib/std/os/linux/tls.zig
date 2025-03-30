@@ -322,17 +322,17 @@ pub fn setThreadPointer(addr: usize) void {
     }
 }
 
-fn computeAreaDesc(phdrs: []elf.Phdr) void {
+fn computeAreaDesc(phdrs: []elf.ProgramHeader.Native) void {
     @setRuntimeSafety(false);
     @disableInstrumentation();
 
-    var tls_phdr: ?*elf.Phdr = null;
+    var tls_phdr: ?*elf.ProgramHeader.Native = null;
     var img_base: usize = 0;
 
     for (phdrs) |*phdr| {
         switch (phdr.p_type) {
-            elf.PT_PHDR => img_base = @intFromPtr(phdrs.ptr) - phdr.p_vaddr,
-            elf.PT_TLS => tls_phdr = phdr,
+            .phdr => img_base = @intFromPtr(phdrs.ptr) - phdr.p_vaddr,
+            .tls => tls_phdr = phdr,
             else => {},
         }
     }
@@ -495,7 +495,7 @@ var main_thread_area_buffer: [0x2100]u8 align(page_size_min) = undefined;
 
 /// Computes the layout of the static TLS area, allocates the area, initializes all of its fields,
 /// and assigns the architecture-specific value to the TP register.
-pub fn initStatic(phdrs: []elf.Phdr) void {
+pub fn initStatic(phdrs: []elf.ProgramHeader.Native) void {
     @setRuntimeSafety(false);
     @disableInstrumentation();
 

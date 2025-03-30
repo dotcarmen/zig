@@ -547,7 +547,7 @@ fn iter_fn(info: *dl_phdr_info, size: usize, counter: *usize) IterFnError!void {
     while (i < info.phnum) : (i += 1) {
         const phdr = info.phdr[i];
 
-        if (phdr.p_type != elf.PT_LOAD) continue;
+        if (phdr.p_type != .load) continue;
 
         const reloc_addr = info.addr + phdr.p_vaddr;
         // Find the ELF header
