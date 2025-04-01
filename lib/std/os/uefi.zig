@@ -186,6 +186,17 @@ pub const TimeCapabilities = extern struct {
 /// File Handle as specified in the EFI Shell Spec
 pub const FileHandle = *opaque {};
 
+pub const WinCertificate = extern struct {
+    dw_len: u32,
+    w_revision: u16,
+    w_certificate_type: u16,
+};
+
+pub const WinCertificateUefiGuid = extern struct {
+    hdr: WinCertificate,
+    cert_type: Guid,
+};
+
 test "GUID formatting" {
     const bytes = [_]u8{ 137, 60, 203, 50, 128, 128, 124, 66, 186, 19, 80, 73, 135, 59, 194, 135 };
     const guid: Guid = @bitCast(bytes);
