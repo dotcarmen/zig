@@ -27,12 +27,10 @@ pub const HiiDatabase = extern struct {
         NotFound,
     };
     pub const ListPackageListsError = uefi.UnexpectedError || error{
-        BufferTooSmall,
         InvalidParameter,
         NotFound,
     };
     pub const ExportPackageListError = uefi.UnexpectedError || error{
-        BufferTooSmall,
         InvalidParameter,
         NotFound,
     };
@@ -62,12 +60,16 @@ pub const HiiDatabase = extern struct {
     }
 
     /// Determines the handles that are currently active in the database.
+    ///
+    /// Returns the length of the buffer needed to contain all entries. If the
+    /// value is greater than `handles.len`, then `handles` may not contain the
+    /// results, and a larger buffer should be passed to obtain the results.
     pub fn listPackageLists(
         self: *const HiiDatabase,
         package_type: u8,
         package_guid: ?*const Guid,
         handles: []hii.Handle,
-    ) ListPackageListsError![]hii.Handle {
+    ) ListPackageListsError!usize {
         var len: usize = handles.len;
         switch (self._list_package_lists(
             self,
@@ -76,8 +78,8 @@ pub const HiiDatabase = extern struct {
             &len,
             handles.ptr,
         )) {
-            .success => return handles[0..len],
-            .buffer_too_small => return Error.BufferTooSmall,
+            .success => return len,
+            .buffer_too_small => return len,
             .invalid_parameter => return Error.InvalidParameter,
             .not_found => return Error.NotFound,
             else => |status| return uefi.unexpectedStatus(status),
@@ -85,15 +87,19 @@ pub const HiiDatabase = extern struct {
     }
 
     /// Exports the contents of one or all package lists in the HII database into a buffer.
+    ///
+    /// Returns the length of the buffer needed to contain all entries. If the
+    /// value is greater than `buffer.len`, then `buffer` may not contain the
+    /// results, and a larger buffer should be passed to obtain the results.
     pub fn exportPackageLists(
         self: *const HiiDatabase,
         handle: ?hii.Handle,
         buffer: []hii.PackageList,
-    ) ExportPackageListError![]hii.PackageList {
+    ) ExportPackageListError!usize {
         var len = buffer.len;
         switch (self._export_package_lists(self, handle, &len, buffer.ptr)) {
-            .success => return buffer[0..len],
-            .buffer_too_small => return Error.BufferTooSmall,
+            .success => return len,
+            .buffer_too_small => return len,
             .invalid_parameter => return Error.InvalidParameter,
             .not_found => return Error.NotFound,
             else => |status| return uefi.unexpectedStatus(status),
