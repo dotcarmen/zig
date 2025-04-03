@@ -7,12 +7,13 @@ const cc = uefi.cc;
 const Error = Status.Error;
 const MacAddress = uefi.MacAddress;
 const Ip6 = uefi.protocol.Ip6;
+const meta = std.meta;
 
 pub const Ip6Config = extern struct {
-    _set_data: *const fn (*const Ip6Config, DataType, usize, *const anyopaque) callconv(cc) Status,
-    _get_data: *const fn (*const Ip6Config, DataType, *usize, ?*const anyopaque) callconv(cc) Status,
-    _register_data_notify: *const fn (*const Ip6Config, DataType, Event) callconv(cc) Status,
-    _unregister_data_notify: *const fn (*const Ip6Config, DataType, Event) callconv(cc) Status,
+    _set_data: *const fn (*const Ip6Config, meta.Tag(DataType), usize, *const anyopaque) callconv(cc) Status,
+    _get_data: *const fn (*const Ip6Config, meta.Tag(DataType), *usize, ?*const anyopaque) callconv(cc) Status,
+    _register_data_notify: *const fn (*const Ip6Config, meta.Tag(DataType), Event) callconv(cc) Status,
+    _unregister_data_notify: *const fn (*const Ip6Config, meta.Tag(DataType), Event) callconv(cc) Status,
 
     pub const SetDataError = uefi.UnexpectedError || error{
         InvalidParameter,
