@@ -713,6 +713,28 @@ pub const EI_PAD = 9;
 
 pub const EI_NIDENT = 16;
 
+pub const EIdent = packed struct(u128) {
+    pub const Class = enum(u8) {
+        @"32" = 1,
+        @"64" = 2,
+        _,
+    };
+
+    pub const Data = enum(u8) {
+        lsb = 1,
+        msb = 2,
+        _,
+    };
+
+    _magic: u32,
+    class: Class,
+    data: Data,
+    version: u8,
+    osabi: OSABI,
+    abi_version: u8,
+    _pad: u56,
+};
+
 pub const Half = u16;
 pub const Word = u32;
 pub const Sword = i32;
@@ -743,7 +765,7 @@ pub const Elf32_Ehdr = extern struct {
     e_shstrndx: Half,
 };
 pub const Elf64_Ehdr = extern struct {
-    e_ident: [EI_NIDENT]u8,
+    e_ident: EIdent,
     e_type: ET,
     e_machine: EM,
     e_version: Word,
@@ -1032,6 +1054,8 @@ pub const Elf_MIPS_ABIFlags_v0 = extern struct {
 };
 
 comptime {
+    assert(@sizeOf(EIdent) == EI_NIDENT);
+
     assert(@sizeOf(Elf32_Ehdr) == 52);
     assert(@sizeOf(Elf64_Ehdr) == 64);
 
