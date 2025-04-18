@@ -15,6 +15,9 @@ const zig_version: std.SemanticVersion = .{ .major = 0, .minor = 15, .patch = 0 
 const stack_size = 46 * 1024 * 1024;
 
 pub fn build(b: *std.Build) !void {
+    if (b.option(bool, "skip-build-zig", "immediately exit from build.zig") == true)
+        return;
+
     const only_c = b.option(bool, "only-c", "Translate the Zig compiler to C code, with only the C backend enabled") orelse false;
     const target = b.standardTargetOptions(.{
         .default_target = .{
