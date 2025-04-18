@@ -841,12 +841,12 @@ fn ElfFile(comptime is_64: bool) type {
         arena: std.heap.ArenaAllocator,
 
         const SectionCategory = ElfFileHelper.SectionCategory;
-        const section_memory_align: std.mem.Alignment = .of(Elf_Sym); // most restrictive of what we may load in memory
+        const section_memory_align = @alignOf(Elf_Sym); // most restrictive of what we may load in memory
         const Section = struct {
             section: Elf_Shdr,
             name: []const u8 = "",
             segment: ?*const Elf_Phdr = null, // if the section is used by a program segment (there can be more than one)
-            payload: ?[]align(section_memory_align.toByteUnits()) const u8 = null, // if we need the data in memory
+            payload: ?[]align(section_memory_align) const u8 = null, // if we need the data in memory
             category: SectionCategory = .none, // should the section be kept in the exe or stripped to the debug database, or both.
         };
 
@@ -999,7 +999,7 @@ fn ElfFile(comptime is_64: bool) type {
                 remap_idx: u16,
 
                 // optionally overrides the payload from the source file
-                payload: ?[]align(section_memory_align.toByteUnits()) const u8 = null,
+                payload: ?[]align(section_memory_align) const u8 = null,
                 section: ?Elf_Shdr = null,
             };
             const sections_update = try allocator.alloc(Update, self.sections.len);
