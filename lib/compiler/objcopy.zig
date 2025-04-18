@@ -1215,7 +1215,7 @@ fn ElfFile(comptime is_64: bool) type {
                 if (options.debuglink) |link| {
                     const payload = payload: {
                         const crc_offset = std.mem.alignForward(usize, link.name.len + 1, 4);
-                        const buf = try allocator.alignedAlloc(u8, 4, crc_offset + 4);
+                        const buf = try allocator.alignedAlloc(u8, .@"4", crc_offset + 4);
                         @memcpy(buf[0..link.name.len], link.name);
                         @memset(buf[link.name.len..crc_offset], 0);
                         @memcpy(buf[crc_offset..], std.mem.asBytes(&link.crc32));
@@ -1494,7 +1494,7 @@ const ElfFileHelper = struct {
         var section_reader = std.io.limitedReader(in_file.reader(), size);
 
         // allocate as large as decompressed data. if the compression doesn't fit, keep the data uncompressed.
-        const compressed_data = try allocator.alignedAlloc(u8, 8, @intCast(size));
+        const compressed_data = try allocator.alignedAlloc(u8, .@"8", @intCast(size));
         var compressed_stream = std.io.fixedBufferStream(compressed_data);
 
         try compressed_stream.writer().writeAll(prefix);
