@@ -144,6 +144,11 @@ pub const MemoryMapInfo = struct {
     len: usize,
 };
 
+pub const MemoryMapAddressSpace = enum(u8) {
+    physical,
+    virtual,
+};
+
 pub const MemoryMapSlice = struct {
     info: MemoryMapInfo,
     ptr: [*]align(@alignOf(MemoryDescriptor)) u8,
@@ -160,6 +165,28 @@ pub const MemoryMapSlice = struct {
     pub fn getUnchecked(self: MemoryMapSlice, index: usize) *MemoryDescriptor {
         const offset: usize = index * self.info.descriptor_size;
         return @alignCast(@ptrCast(self.ptr[offset..]));
+    }
+
+    pub fn findPointer(
+        self: MemoryMapSlice,
+        pointer: *const anyopaque,
+        space: MemoryMapAddressSpace,
+    ) ?*MemoryDescriptor {
+        const pointer_int = @intFromPtr(pointer);
+        var iter = self.iterator();
+        while (iter.next()) |mdesc| {
+            const mlen: usize = mdesc.number_of_pages * @sizeOf(uefi.Page);
+            if (space == .physical and
+                pointer_int >= mdesc.physical_start and
+                pointer_int < (mdesc.physical_start + mlen))
+                return mdesc
+            else if (space == .virtual and
+                pointer_int >= mdesc.virtual_start and
+                pointer_int < (mdesc.virtual_start + mlen))
+                return mdesc;
+        }
+
+        return null;
     }
 };
 
